@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections import deque
 from datetime import datetime, timezone
 
 from playwright.async_api import async_playwright
@@ -19,7 +20,7 @@ from config import (
     SELECTORS,
     get_random_proxy,
 )
-from higgsfield_service import _parse_proxy_for_playwright
+from higgsfield_service import _parse_proxy_for_playwright, _browser_semaphore
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class PageMonitor:
         # Hash dell'ultima struttura nota
         self._last_hashes: dict[str, str] = {}
         self._last_check: datetime | None = None
-        self._change_log: list[dict] = []
+        self._change_log: deque[dict] = deque(maxlen=20)
 
     @property
     def is_running(self) -> bool:
@@ -55,7 +56,7 @@ class PageMonitor:
 
     @property
     def change_log(self) -> list[dict]:
-        return self._change_log[-20:]  # ultimi 20 cambiamenti
+        return list(self._change_log)
 
     async def _extract_page_fingerprint(self, url: str) -> dict:
         """
@@ -68,7 +69,7 @@ class PageMonitor:
         proxy = get_random_proxy()
         pw_proxy = _parse_proxy_for_playwright(proxy) if proxy else None
 
-        async with async_playwright() as p:
+        async with _browser_semaphore, async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
                 args=["--no-sandbox", "--disable-dev-shm-usage"],
@@ -211,11 +212,11 @@ class PageMonitor:
 
     async def _loop(self):
         """Loop principale del monitor."""
-        logger.info(f"Monitor avviato — intervallo: {MONITOR_INTERVAL}s")
+        logger.info("Monitor avviato — intervallo: %ds", MONITOR_INTERVAL)
 
         # Primo check per baseline
         await self.check_now()
-        logger.info(f"Monitor — baseline acquisita: {self._last_hashes}")
+        logger.info("Monitor — baseline acquisita: %s", self._last_hashes)
 
         while self._running:
             await asyncio.sleep(MONITOR_INTERVAL)
@@ -224,7 +225,7 @@ class PageMonitor:
             try:
                 await self.check_now()
                 logger.info(
-                    f"Monitor check completato — hashes: {self._last_hashes}"
+                    "Monitor check completato — hashes: %s", self._last_hashes
                 )
             except Exception as e:
                 logger.error(f"Monitor errore nel check: {e}", exc_info=True)

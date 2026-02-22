@@ -7,6 +7,7 @@ import asyncio
 import logging
 import random
 import string
+import uuid
 from dataclasses import dataclass
 
 from playwright.async_api import async_playwright, Browser, Page, BrowserContext
@@ -23,6 +24,9 @@ from config import (
 from mail_service import MailTMService, TempMailAccount
 
 logger = logging.getLogger(__name__)
+
+# Limit to one Chromium instance at a time to avoid OOM with the 1GB container limit
+_browser_semaphore = asyncio.Semaphore(1)
 
 
 @dataclass
@@ -95,6 +99,11 @@ class HiggsFieldService:
             if progress_callback:
                 await progress_callback(msg)
 
+        async with _browser_semaphore:
+            return await self._register_impl(proxy, notify)
+
+    async def _register_impl(self, proxy, notify) -> RegistrationResult:
+        """Internal registration logic, runs under the browser semaphore."""
         # ── Step 1: Crea email temporanea ───────────────────
         await notify("📧 Creazione email temporanea...")
         try:
@@ -182,8 +191,9 @@ class HiggsFieldService:
                     page, mail_account.address, higgs_password
                 )
                 if not result:
-                    # Screenshot per debug
-                    await page.screenshot(path="/tmp/higgs_error.png")
+                    # Screenshot per debug (unique filename to avoid overwrites)
+                    screenshot_path = f"/tmp/higgs_error_{uuid.uuid4().hex[:8]}.png"
+                    await page.screenshot(path=screenshot_path)
                     await browser.close()
                     return RegistrationResult(
                         success=False,

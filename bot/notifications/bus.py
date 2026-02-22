@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from typing import Any
 
 from notifications.events import Event, Severity, EventCategory
@@ -39,8 +40,7 @@ class NotificationBus:
 
     def __init__(self):
         self._notifiers: list[BaseNotifier] = []
-        self._event_log: list[Event] = []
-        self._max_log_size = 100
+        self._event_log: deque[Event] = deque(maxlen=100)
 
     @classmethod
     def get_bus(cls) -> NotificationBus:
@@ -78,10 +78,8 @@ class NotificationBus:
         Returns:
             Dict {notifier_name: success} per ogni notifier che ha tentato l'invio.
         """
-        # Log interno
+        # Log interno (deque auto-evicts oldest entries)
         self._event_log.append(event)
-        if len(self._event_log) > self._max_log_size:
-            self._event_log = self._event_log[-self._max_log_size:]
 
         results = {}
         tasks = []

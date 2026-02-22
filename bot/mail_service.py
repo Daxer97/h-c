@@ -4,6 +4,7 @@ Gestisce creazione account, autenticazione e polling messaggi.
 """
 
 import asyncio
+import logging
 import random
 import string
 import re
@@ -12,6 +13,8 @@ from dataclasses import dataclass
 import aiohttp
 
 from config import get_random_proxy
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.mail.tm"
 
@@ -40,23 +43,53 @@ class MailTMService:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            # Proxy opzionale anche per le chiamate API mail.tm
-            proxy = get_random_proxy()
             self._session = aiohttp.ClientSession()
-            self._proxy = proxy
         return self._session
 
     async def close(self):
         if self._session and not self._session.closed:
             await self._session.close()
 
-    async def _request(self, method: str, url: str, **kwargs):
+    async def _request(self, method: str, url: str, max_retries: int = 3, **kwargs):
         session = await self._get_session()
-        if self._proxy:
-            kwargs["proxy"] = self._proxy
-        async with session.request(method, url, **kwargs) as resp:
-            resp.raise_for_status()
-            return await resp.json()
+        # Fresh proxy per-request for proper rotation
+        proxy = get_random_proxy()
+        if proxy:
+            kwargs["proxy"] = proxy
+
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                async with session.request(method, url, **kwargs) as resp:
+                    if resp.status == 429:
+                        retry_after = int(resp.headers.get("Retry-After", 2))
+                        logger.warning(
+                            "mail.tm rate limited, retry in %ds (attempt %d/%d)",
+                            retry_after, attempt, max_retries,
+                        )
+                        await asyncio.sleep(retry_after)
+                        continue
+                    if resp.status >= 500:
+                        logger.warning(
+                            "mail.tm server error %d (attempt %d/%d)",
+                            resp.status, attempt, max_retries,
+                        )
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    resp.raise_for_status()
+                    return await resp.json()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_error = e
+                if attempt < max_retries:
+                    logger.warning(
+                        "mail.tm request error: %s (attempt %d/%d)",
+                        e, attempt, max_retries,
+                    )
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                raise
+
+        raise last_error or RuntimeError("mail.tm request failed after retries")
 
     # ── Domain ──────────────────────────────────────────────
 
@@ -82,7 +115,8 @@ class MailTMService:
         password = self._random_string(16)
 
         session = await self._get_session()
-        proxy_kw = {"proxy": self._proxy} if self._proxy else {}
+        proxy = get_random_proxy()
+        proxy_kw = {"proxy": proxy} if proxy else {}
 
         # Crea account
         async with session.post(
@@ -116,7 +150,8 @@ class MailTMService:
     async def get_messages(self, account: TempMailAccount) -> list[MailMessage]:
         session = await self._get_session()
         headers = {"Authorization": f"Bearer {account.token}"}
-        proxy_kw = {"proxy": self._proxy} if self._proxy else {}
+        proxy = get_random_proxy()
+        proxy_kw = {"proxy": proxy} if proxy else {}
 
         async with session.get(
             f"{BASE_URL}/messages", headers=headers, **proxy_kw
@@ -146,7 +181,8 @@ class MailTMService:
     ) -> MailMessage:
         session = await self._get_session()
         headers = {"Authorization": f"Bearer {account.token}"}
-        proxy_kw = {"proxy": self._proxy} if self._proxy else {}
+        proxy = get_random_proxy()
+        proxy_kw = {"proxy": proxy} if proxy else {}
 
         async with session.get(
             f"{BASE_URL}/messages/{message_id}", headers=headers, **proxy_kw

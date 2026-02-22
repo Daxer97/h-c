@@ -210,14 +210,30 @@ class DockerMonitor:
         if status:
             self.stats["current_status"] = status["status"]
 
+    def _iter_events_blocking(self):
+        """Blocking generator that yields Docker events. Runs in executor."""
+        client = self._get_client()
+        events = client.events(
+            decode=True,
+            filters={
+                "type": "container",
+                "event": [
+                    "die", "start", "stop", "kill", "oom",
+                    "health_status",
+                ],
+            },
+        )
+        for event in events:
+            if not self._running:
+                break
+            yield event
+
     async def _event_loop(self):
         """Loop principale — ascolta eventi Docker."""
         logger.info(f"DockerMonitor: ascolto eventi per '{self._container_name}'")
 
         while self._running:
             try:
-                client = self._get_client()
-
                 # Verifica che il container esista
                 status = self._get_container_status()
                 if status:
@@ -234,24 +250,29 @@ class DockerMonitor:
                         {},
                     )
 
-                # Ascolta eventi (blocking call → run in executor)
-                events = client.events(
-                    decode=True,
-                    filters={
-                        "type": "container",
-                        "event": [
-                            "die", "start", "stop", "kill", "oom",
-                            "health_status",
-                        ],
-                    },
-                )
+                # Read events in a thread to avoid blocking the asyncio loop
+                loop = asyncio.get_running_loop()
+                queue: asyncio.Queue = asyncio.Queue()
 
-                loop = asyncio.get_event_loop()
-                for event in events:
-                    if not self._running:
-                        break
-                    # Processa in async
-                    await self._process_event(event)
+                def _reader():
+                    try:
+                        for event in self._iter_events_blocking():
+                            loop.call_soon_threadsafe(queue.put_nowait, event)
+                    except Exception as e:
+                        loop.call_soon_threadsafe(queue.put_nowait, e)
+
+                reader_future = loop.run_in_executor(None, _reader)
+
+                while self._running:
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        continue
+                    if isinstance(item, Exception):
+                        raise item
+                    await self._process_event(item)
+
+                reader_future.cancel()
 
             except DockerException as e:
                 logger.error(f"DockerMonitor: errore Docker: {e}")
