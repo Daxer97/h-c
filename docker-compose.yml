@@ -1,0 +1,59 @@
+services:
+
+  # ═══════════════════════════════════════════════════════
+  # OVERLAY — Applicativo
+  # ═══════════════════════════════════════════════════════
+  tempmail-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tempmail-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Health endpoint per il watchdog
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    volumes:
+      - ./debug:/tmp/debug
+      - ./logs:/app/logs
+
+  # ═══════════════════════════════════════════════════════
+  # UNDERLAY — Sistema / Infrastruttura
+  # ═══════════════════════════════════════════════════════
+  watchdog:
+    build:
+      context: .
+      dockerfile: Dockerfile.watchdog
+    container_name: tempmail-watchdog
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WATCHED_CONTAINER=tempmail-bot
+      - HEALTH_CHECK_URL=http://tempmail-bot:8080/health
+    depends_on:
+      tempmail-bot:
+        condition: service_started
+    volumes:
+      # Docker socket (read-only) per monitorare eventi container
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Condividi la directory log
+      - ./logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 128M

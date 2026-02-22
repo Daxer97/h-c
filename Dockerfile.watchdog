@@ -1,0 +1,14 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY watchdog/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copia il package notifications dal bot (riusato)
+COPY bot/notifications/ ./notifications/
+
+# Copia il codice watchdog
+COPY watchdog/*.py ./
+
+CMD ["python", "main.py"]
