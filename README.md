@@ -6,7 +6,7 @@ Bot Telegram con:
 - **Page monitor** che ti avvisa su Telegram se la struttura della pagina cambia
 - **Proxy rotation** per IP rotation
 
-## Quick Start
+## Quick Start (Docker)
 
 ```bash
 # 1. Clona e configura
@@ -19,6 +19,41 @@ docker compose up -d
 # 3. Verifica logs
 docker compose logs -f
 ```
+
+## Quick Start (senza Docker)
+
+Richiede Python 3.12+ e le dipendenze di sistema per Chromium.
+
+```bash
+# 1. Installa dipendenze di sistema (Debian/Ubuntu)
+sudo apt-get update && sudo apt-get install -y \
+    wget ca-certificates fonts-liberation libasound2t64 \
+    libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 \
+    libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 \
+    libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 xdg-utils
+
+# 2. Crea virtual environment e installa dipendenze Python
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r bot/requirements.txt
+
+# 3. Installa Chromium per Playwright
+playwright install chromium
+
+# 4. Configura environment
+cp .env.example .env
+# Modifica .env → inserisci TELEGRAM_BOT_TOKEN e ADMIN_CHAT_ID
+# Cambia LOG_DIR se vuoi (default: /app/logs)
+#   LOG_DIR=./logs
+
+# 5. Avvia il bot
+cd bot
+python main.py
+```
+
+> **Nota:** il watchdog (`watchdog/main.py`) monitora container Docker, quindi
+> ha senso solo dentro Docker. Senza Docker il bot gira comunque —
+> perdi solo il monitoraggio infrastruttura.
 
 ## Comandi Bot
 
