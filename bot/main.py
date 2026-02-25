@@ -21,7 +21,7 @@ import time
 import html as html_module
 
 from aiogram import Bot, Dispatcher, Router
-from aiogram.types import Message
+from aiogram.types import Message, ErrorEvent
 from aiogram.filters import Command, BaseFilter
 from aiogram.enums import ParseMode
 
@@ -569,6 +569,40 @@ async def cmd_notif_status(message: Message):
             )
 
     await message.reply("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+# ═══════════════════════════════════════════════════════════
+# GLOBAL ERROR HANDLER
+# ═══════════════════════════════════════════════════════════
+
+
+@router.errors()
+async def handle_dispatcher_error(event: ErrorEvent):
+    """
+    Catch-all for any unhandled exception raised inside a handler.
+
+    Without this, exceptions propagate through every middleware layer and
+    produce the long dispatcher traceback logged at _process_update.
+    """
+    exc = event.exception
+    logger.error("Unhandled dispatcher error: %s", exc, exc_info=exc)
+
+    # Best-effort: try to reply to the user so they aren't left hanging.
+    update = event.update
+    msg = update.message or (update.callback_query and update.callback_query.message)
+    if msg:
+        try:
+            await msg.reply(f"❌ Errore interno: {escape(exc)}", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+    if bus:
+        await bus.error(
+            f"Dispatcher error: {exc}",
+            category=EventCategory.SYSTEM,
+            exception=exc,
+            source="dispatcher.errors",
+        )
 
 
 # ═══════════════════════════════════════════════════════════
