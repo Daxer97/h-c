@@ -22,7 +22,7 @@ import html as html_module
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.types import Message
-from aiogram.filters import Command
+from aiogram.filters import Command, BaseFilter
 from aiogram.enums import ParseMode
 
 from config import (
@@ -54,9 +54,18 @@ logger = logging.getLogger(__name__)
 
 # ── Init ────────────────────────────────────────────────────
 
+
+class _HasUser(BaseFilter):
+    """Silently drops messages with no from_user (anonymous channel posts, etc.)."""
+
+    async def __call__(self, message: Message) -> bool:
+        return message.from_user is not None
+
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
+router.message.filter(_HasUser())
 dp.include_router(router)
 
 mail_service = MailTMService()
