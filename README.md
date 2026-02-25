@@ -37,11 +37,12 @@ docker compose logs -f
 |---------|-------------|
 | `/register` | Auto-registrazione completa (email → form → verifica) |
 
-### 🔍 Monitor
+### 🔍 Monitor & Diagnostica
 | Comando | Descrizione |
 |---------|-------------|
 | `/monitor_status` | Stato del monitor |
 | `/monitor_check` | Forza check immediato della struttura pagina |
+| `/notif_status` | Status del notification bus |
 
 ## Architettura
 
@@ -176,10 +177,22 @@ bus.register(SlackNotifier(name="slack", min_severity=Severity.ERROR))
 
 Ogni notifier ha un `min_severity` — riceve solo eventi >= quel livello.
 
+## Rate Limiting
+
+I comandi più pesanti hanno un cooldown per-utente per evitare abusi e OOM:
+
+| Comando | Cooldown |
+|---------|----------|
+| `/register` | 60s |
+| `/monitor_check` | 30s |
+| `/newemail` | 10s |
+
+Le istanze Chromium sono serializzate (max 1 alla volta) per restare nel limite di memoria del container.
+
 ## Limiti e Note
 
 - **Stato in-memory** — si resetta al riavvio del container
-- **mail.tm rate limit** — 8 req/sec per IP
+- **mail.tm rate limit** — 8 req/sec per IP (gestito con retry automatico)
 - **Immagine Docker** — ~800MB (Chromium incluso)
 - **Memoria** — il container usa fino a ~500MB durante registrazione (Chromium)
 - **ToS** — l'automazione viola i termini di servizio di Higgsfield

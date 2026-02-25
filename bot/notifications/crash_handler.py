@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import platform
 from datetime import datetime, timezone
@@ -178,7 +179,7 @@ class LifecycleEmitter:
             metadata={
                 "python": platform.python_version(),
                 "platform": platform.platform(),
-                "pid": str(sys.modules.get("os", type("", (), {"getpid": lambda: "?"})).__class__),
+                "pid": str(os.getpid()),
             },
         )
 

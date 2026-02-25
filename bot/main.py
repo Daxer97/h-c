@@ -17,6 +17,7 @@ Comandi:
 
 import asyncio
 import logging
+import time
 import html as html_module
 
 from aiogram import Bot, Dispatcher, Router
@@ -88,12 +89,16 @@ user_registrations: dict[int, list[RegistrationResult]] = {}
 
 # ── Helpers ─────────────────────────────────────────────────
 
+# Parse once at module level instead of re-parsing on every command
+_ALLOWED_IDS: set[int] | None = None
+if ALLOWED_USER_IDS.strip():
+    _ALLOWED_IDS = {int(x.strip()) for x in ALLOWED_USER_IDS.split(",") if x.strip()}
+
 
 def is_allowed(user_id: int) -> bool:
-    if not ALLOWED_USER_IDS.strip():
+    if _ALLOWED_IDS is None:
         return True
-    allowed = {int(x.strip()) for x in ALLOWED_USER_IDS.split(",") if x.strip()}
-    return user_id in allowed
+    return user_id in _ALLOWED_IDS
 
 
 def escape(text: str) -> str:
@@ -104,6 +109,31 @@ def truncate(text: str, max_len: int = 3500) -> str:
     if len(text) <= max_len:
         return text
     return text[:max_len] + "\n\n… [troncato]"
+
+
+# ── Rate limiting ──────────────────────────────────────────────
+# Per-user cooldowns (seconds) for resource-intensive commands
+_COMMAND_COOLDOWNS: dict[str, int] = {
+    "register": 60,       # Chromium-heavy
+    "monitor_check": 30,  # Chromium-heavy
+    "newemail": 10,       # API call
+}
+_user_last_command: dict[tuple[int, str], float] = {}
+
+
+def check_rate_limit(user_id: int, command: str) -> str | None:
+    """Returns an error message if rate-limited, None if allowed."""
+    cooldown = _COMMAND_COOLDOWNS.get(command)
+    if cooldown is None:
+        return None
+    key = (user_id, command)
+    now = time.monotonic()
+    last = _user_last_command.get(key, 0)
+    remaining = cooldown - (now - last)
+    if remaining > 0:
+        return f"⏳ Attendi {int(remaining)}s prima di riusare /{command}."
+    _user_last_command[key] = now
+    return None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -143,6 +173,11 @@ async def cmd_new_email(message: Message):
         return
 
     uid = message.from_user.id
+    rate_msg = check_rate_limit(uid, "newemail")
+    if rate_msg:
+        await message.reply(rate_msg)
+        return
+
     status = await message.reply("⏳ Creo email temporanea...")
 
     try:
@@ -262,7 +297,7 @@ async def cmd_wait(message: Message):
         content = msg.text or msg.html or ""
         links = mail_service.extract_links(content)
         links_text = (
-            "\n".join(f"🔗 {escape(l)}" for l in links[:5])
+            "\n".join(f"🔗 {escape(link)}" for link in links[:5])
             if links
             else "Nessun link."
         )
@@ -308,7 +343,7 @@ async def cmd_read(message: Message):
 
         content = msg.text or msg.intro or "(vuoto)"
         links = mail_service.extract_links(msg.text or msg.html or "")
-        links_text = "\n".join(f"🔗 {escape(l)}" for l in links[:10]) if links else ""
+        links_text = "\n".join(f"🔗 {escape(link)}" for link in links[:10]) if links else ""
 
         text = (
             f"📧 <b>Messaggio #{idx}</b>\n\n"
@@ -360,6 +395,11 @@ async def cmd_register(message: Message):
         return
 
     uid = message.from_user.id
+    rate_msg = check_rate_limit(uid, "register")
+    if rate_msg:
+        await message.reply(rate_msg)
+        return
+
     status = await message.reply(
         "🚀 <b>Avvio auto-registrazione Higgsfield...</b>\n\n"
         "Il processo richiede circa 1-3 minuti.",
@@ -438,6 +478,11 @@ async def cmd_monitor_status(message: Message):
 @router.message(Command("monitor_check"))
 async def cmd_monitor_check(message: Message):
     if not is_allowed(message.from_user.id):
+        return
+
+    rate_msg = check_rate_limit(message.from_user.id, "monitor_check")
+    if rate_msg:
+        await message.reply(rate_msg)
         return
 
     status = await message.reply("🔍 Check struttura in corso...")

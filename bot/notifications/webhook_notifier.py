@@ -111,6 +111,12 @@ class WebhookNotifier(BaseNotifier):
         max_retries: int = 2,
     ):
         super().__init__(name=name, min_severity=min_severity, enabled=enabled)
+
+        if url and not url.startswith("https://"):
+            logger.warning(
+                f"WebhookNotifier: URL does not use HTTPS ({url[:40]}...). "
+                f"Event data will be transmitted in cleartext."
+            )
         self._url = url
         self._headers = headers or {}
         self._timeout = aiohttp.ClientTimeout(total=timeout)
