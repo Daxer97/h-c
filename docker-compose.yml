@@ -10,7 +10,8 @@ services:
     container_name: tempmail-bot
     restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       - PYTHONUNBUFFERED=1
     # Health endpoint per il watchdog
@@ -40,7 +41,8 @@ services:
     container_name: tempmail-watchdog
     restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       - PYTHONUNBUFFERED=1
       - WATCHED_CONTAINER=tempmail-bot
