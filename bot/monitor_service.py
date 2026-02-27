@@ -265,7 +265,7 @@ class PageMonitor:
 
         if self._change_log:
             lines.append(f"\n📋 Ultimi cambiamenti ({len(self._change_log)}):")
-            for entry in self._change_log[-5:]:
+            for entry in list(self._change_log)[-5:]:
                 lines.append(
                     f"  {entry['timestamp'][:19]} — {entry['page']} "
                     f"({entry['old_hash']} → {entry['new_hash']})"

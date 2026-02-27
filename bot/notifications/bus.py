@@ -199,4 +199,4 @@ class NotificationBus:
 
     @property
     def recent_events(self) -> list[Event]:
-        return list(self._event_log[-20:])
+        return list(self._event_log)[-20:]
