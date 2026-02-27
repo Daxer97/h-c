@@ -176,9 +176,12 @@ class HiggsFieldService:
 
                 await notify("📝 Compilazione form di registrazione...")
 
-                # ── Check CAPTCHA ───────────────────────────
-                captcha = await page.query_selector(SELECTORS["captcha_frame"])
-                if captcha:
+                # Wait for main frame to stabilise after SPA hydration
+                await page.wait_for_load_state("domcontentloaded")
+
+                # ── Check CAPTCHA (locator-based) ────────────
+                captcha = page.locator(SELECTORS["captcha_frame"])
+                if await captcha.count() > 0:
                     await browser.close()
                     return RegistrationResult(
                         success=False,
@@ -292,24 +295,28 @@ class HiggsFieldService:
         """
         Compila il form di registrazione e fa submit.
         Ritorna True se il submit sembra andato a buon fine.
+
+        Uses Playwright locators instead of query_selector to avoid
+        'Unable to adopt element handle from a different document' errors
+        that occur when the SPA's document context changes (e.g. Next.js
+        hydration or client-side routing).
         """
         try:
             # Attendi che il form sia visibile
+            await page.wait_for_load_state("domcontentloaded")
             await page.wait_for_timeout(2000)
 
             # Dismissa il cookie banner se presente (blocca i click)
             try:
-                cookie_banner = await page.query_selector(
-                    "#cookiescript_injected_wrapper"
-                )
-                if cookie_banner:
+                cookie_banner = page.locator("#cookiescript_injected_wrapper")
+                if await cookie_banner.count() > 0:
                     # Prova a cliccare il pulsante "Accept" dentro il banner
-                    accept_btn = await page.query_selector(
+                    accept_btn = page.locator(
                         "#cookiescript_accept, "
                         "#cookiescript_injected_wrapper [data-cs-action='accept'], "
                         "#cookiescript_injected_wrapper button"
-                    )
-                    if accept_btn:
+                    ).first
+                    if await accept_btn.count() > 0:
                         await accept_btn.click(timeout=3000)
                         logger.info("Cookie banner accettato tramite pulsante")
                     else:
@@ -330,57 +337,59 @@ class HiggsFieldService:
                 """)
                 await page.wait_for_timeout(300)
 
-            # Email
-            email_input = await page.query_selector(SELECTORS["email_input"])
-            if not email_input:
+            # Email — use locator (lazy, re-queries DOM automatically)
+            email_loc = page.locator(SELECTORS["email_input"]).first
+            try:
+                await email_loc.wait_for(state="visible", timeout=10000)
+            except Exception:
                 logger.error("Email input non trovato")
                 return False
 
-            await email_input.click()
+            await email_loc.click()
             await page.wait_for_timeout(random.randint(100, 300))
-            await email_input.fill("")
+            await email_loc.fill("")
             # Simula digitazione umana
             for char in email:
-                await email_input.type(char, delay=random.randint(30, 80))
+                await email_loc.press_sequentially(char, delay=random.randint(30, 80))
             await page.wait_for_timeout(random.randint(200, 500))
 
             # Password
-            password_input = await page.query_selector(SELECTORS["password_input"])
-            if not password_input:
+            password_loc = page.locator(SELECTORS["password_input"]).first
+            try:
+                await password_loc.wait_for(state="visible", timeout=5000)
+            except Exception:
                 logger.error("Password input non trovato")
                 return False
 
-            await password_input.click()
+            await password_loc.click()
             await page.wait_for_timeout(random.randint(100, 300))
             for char in password:
-                await password_input.type(char, delay=random.randint(30, 80))
+                await password_loc.press_sequentially(char, delay=random.randint(30, 80))
             await page.wait_for_timeout(random.randint(200, 500))
 
             # Confirm password (se presente)
-            confirm_input = await page.query_selector(
-                SELECTORS["confirm_password_input"]
-            )
-            if confirm_input:
-                await confirm_input.click()
+            confirm_loc = page.locator(SELECTORS["confirm_password_input"]).first
+            if await confirm_loc.count() > 0:
+                await confirm_loc.click()
                 await page.wait_for_timeout(random.randint(100, 300))
                 for char in password:
-                    await confirm_input.type(char, delay=random.randint(30, 80))
+                    await confirm_loc.press_sequentially(char, delay=random.randint(30, 80))
                 await page.wait_for_timeout(random.randint(200, 500))
 
             # Submit
-            submit_btn = await page.query_selector(SELECTORS["submit_button"])
-            if not submit_btn:
+            submit_loc = page.locator(SELECTORS["submit_button"]).first
+            if await submit_loc.count() == 0:
                 # Fallback: prova Enter
                 logger.warning("Submit button non trovato, provo Enter")
                 await page.keyboard.press("Enter")
             else:
-                await submit_btn.click()
+                await submit_loc.click()
 
             # Attendi navigazione o cambiamento pagina
             await page.wait_for_timeout(3000)
 
             # Verifica se c'è un errore visibile (es. "already exists")
-            page_text = await page.inner_text("body")
+            page_text = await page.locator("body").inner_text()
             error_keywords = ["already exists", "error", "invalid", "failed"]
             for kw in error_keywords:
                 if kw.lower() in page_text.lower():
