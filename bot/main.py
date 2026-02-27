@@ -432,6 +432,13 @@ async def cmd_register(message: Message):
         result = await higgs_service.register(progress_callback=progress)
         user_registrations.setdefault(uid, []).append(result)
 
+        # Sync the mail account created during registration so that
+        # /check, /wait, /info, /read, /links all work on the correct inbox.
+        if result.mail_account:
+            user_accounts[uid] = result.mail_account
+            user_known_ids[uid] = set()
+            user_last_message[uid] = None
+
         if result.success:
             await status.edit_text(
                 f"✅ <b>Registrazione completata!</b>\n\n"
