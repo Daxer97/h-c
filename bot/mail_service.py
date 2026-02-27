@@ -212,11 +212,28 @@ class MailTMService:
     ) -> MailMessage | None:
         known_ids = known_ids or set()
         elapsed = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 5
+
         while elapsed < timeout:
-            messages = await self.get_messages(account)
-            for msg in messages:
-                if msg.id not in known_ids:
-                    return await self.get_message_detail(account, msg.id)
+            try:
+                messages = await self.get_messages(account)
+                consecutive_errors = 0  # Reset on success
+                for msg in messages:
+                    if msg.id not in known_ids:
+                        return await self.get_message_detail(account, msg.id)
+            except Exception as e:
+                consecutive_errors += 1
+                logger.warning(
+                    "Errore polling inbox (tentativo %d/%d): %s",
+                    consecutive_errors, max_consecutive_errors, e,
+                )
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error(
+                        "Troppi errori consecutivi nel polling inbox, interruzione"
+                    )
+                    return None
+
             await asyncio.sleep(interval)
             elapsed += interval
         return None

@@ -429,11 +429,26 @@ async def cmd_register(message: Message):
             pass
 
     try:
-        result = await higgs_service.register(progress_callback=progress)
+        # Callback per salvare l'email nello stato utente SUBITO dopo la creazione,
+        # senza aspettare che il browser completi il flow (che può richiedere minuti).
+        # Così /info, /check ecc. funzionano anche durante la registrazione.
+        async def on_email_created(mail_account):
+            user_accounts[uid] = mail_account
+            user_known_ids[uid] = set()
+            user_last_message[uid] = None
+            logger.info(
+                "Email %s sincronizzata per user %d (early sync)",
+                mail_account.address, uid,
+            )
+
+        result = await higgs_service.register(
+            progress_callback=progress,
+            on_email_created=on_email_created,
+        )
         user_registrations.setdefault(uid, []).append(result)
 
-        # Sync the mail account created during registration so that
-        # /check, /wait, /info, /read, /links all work on the correct inbox.
+        # Safety net: ri-sincronizza dopo la registrazione in caso il callback
+        # iniziale sia fallito o l'account sia stato aggiornato.
         if result.mail_account:
             user_accounts[uid] = result.mail_account
             user_known_ids[uid] = set()
