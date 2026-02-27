@@ -82,6 +82,7 @@ class HiggsFieldService:
         self,
         proxy_url: str | None = None,
         progress_callback=None,
+        on_email_created=None,
     ) -> RegistrationResult:
         """
         Esegue il flow completo di registrazione.
@@ -89,6 +90,9 @@ class HiggsFieldService:
         Args:
             proxy_url: Proxy da usare (opzionale, se None usa get_random_proxy)
             progress_callback: async callable(str) per aggiornamenti di stato
+            on_email_created: async callable(TempMailAccount) chiamato subito
+                              dopo la creazione dell'email, prima del browser.
+                              Permette al chiamante di salvare lo stato in anticipo.
 
         Returns:
             RegistrationResult con credenziali o errore
@@ -101,9 +105,9 @@ class HiggsFieldService:
                 await progress_callback(msg)
 
         async with _browser_semaphore:
-            return await self._register_impl(proxy, notify)
+            return await self._register_impl(proxy, notify, on_email_created)
 
-    async def _register_impl(self, proxy, notify) -> RegistrationResult:
+    async def _register_impl(self, proxy, notify, on_email_created=None) -> RegistrationResult:
         """Internal registration logic, runs under the browser semaphore."""
         # ── Step 1: Crea email temporanea ───────────────────
         await notify("📧 Creazione email temporanea...")
@@ -115,6 +119,14 @@ class HiggsFieldService:
             )
 
         await notify(f"✅ Email: {mail_account.address}")
+
+        # Notifica il chiamante immediatamente così può salvare lo stato
+        # PRIMA del browser work (che può richiedere minuti).
+        if on_email_created:
+            try:
+                await on_email_created(mail_account)
+            except Exception as e:
+                logger.warning(f"on_email_created callback failed: {e}")
 
         higgs_password = _random_password()
 
