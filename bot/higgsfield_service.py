@@ -297,6 +297,39 @@ class HiggsFieldService:
             # Attendi che il form sia visibile
             await page.wait_for_timeout(2000)
 
+            # Dismissa il cookie banner se presente (blocca i click)
+            try:
+                cookie_banner = await page.query_selector(
+                    "#cookiescript_injected_wrapper"
+                )
+                if cookie_banner:
+                    # Prova a cliccare il pulsante "Accept" dentro il banner
+                    accept_btn = await page.query_selector(
+                        "#cookiescript_accept, "
+                        "#cookiescript_injected_wrapper [data-cs-action='accept'], "
+                        "#cookiescript_injected_wrapper button"
+                    )
+                    if accept_btn:
+                        await accept_btn.click(timeout=3000)
+                        logger.info("Cookie banner accettato tramite pulsante")
+                    else:
+                        # Fallback: rimuovi il banner via JS
+                        await page.evaluate("""
+                            document.querySelector('#cookiescript_injected_wrapper')?.remove();
+                            document.querySelector('#cookiescript_injected')?.remove();
+                        """)
+                        logger.info("Cookie banner rimosso via JS")
+                    await page.wait_for_timeout(500)
+            except Exception as e:
+                # Se fallisce, rimuovi forzatamente via JS
+                logger.warning(f"Cookie banner dismiss fallito, rimozione forzata: {e}")
+                await page.evaluate("""
+                    document.querySelectorAll(
+                        '#cookiescript_injected_wrapper, #cookiescript_injected'
+                    ).forEach(el => el.remove());
+                """)
+                await page.wait_for_timeout(300)
+
             # Email
             email_input = await page.query_selector(SELECTORS["email_input"])
             if not email_input:
