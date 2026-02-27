@@ -194,6 +194,7 @@ async def cmd_new_email(message: Message):
         user_accounts[uid] = account
         user_known_ids[uid] = set()
         user_last_message[uid] = None
+        user_registrations.pop(uid, None)
 
         await status.edit_text(
             f"✅ <b>Email creata!</b>\n\n"
@@ -436,6 +437,7 @@ async def cmd_register(message: Message):
             user_accounts[uid] = mail_account
             user_known_ids[uid] = set()
             user_last_message[uid] = None
+            user_registrations.pop(uid, None)
             logger.info(
                 "Email %s sincronizzata per user %d (early sync)",
                 mail_account.address, uid,
