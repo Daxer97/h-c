@@ -36,6 +36,7 @@ class RegistrationResult:
     password: str = ""
     message: str = ""
     verification_link: str = ""
+    mail_account: TempMailAccount | None = None
 
 
 def _random_password(length: int = DEFAULT_PASSWORD_LENGTH) -> str:
@@ -172,6 +173,7 @@ class HiggsFieldService:
                         success=False,
                         email=mail_account.address,
                         message=f"Errore navigazione: {e}",
+                        mail_account=mail_account,
                     )
 
                 await notify("📝 Compilazione form di registrazione...")
@@ -187,6 +189,7 @@ class HiggsFieldService:
                         success=False,
                         email=mail_account.address,
                         message="⚠️ CAPTCHA rilevato! Registrazione manuale necessaria.",
+                        mail_account=mail_account,
                     )
 
                 # ── Compila form ────────────────────────────
@@ -203,6 +206,7 @@ class HiggsFieldService:
                         email=mail_account.address,
                         password=higgs_password,
                         message="❌ Errore compilazione/submit del form. Screenshot salvato.",
+                        mail_account=mail_account,
                     )
 
                 await notify("📨 Form inviato. Attendo email di verifica...")
@@ -221,6 +225,7 @@ class HiggsFieldService:
                         email=mail_account.address,
                         password=higgs_password,
                         message="⏰ Timeout: nessuna email di verifica ricevuta.",
+                        mail_account=mail_account,
                     )
 
                 await notify(f"📩 Email ricevuta: {msg.subject}")
@@ -253,6 +258,7 @@ class HiggsFieldService:
                         email=mail_account.address,
                         password=higgs_password,
                         message=f"❌ Nessun link di verifica trovato. Link nell'email: {links[:5]}",
+                        mail_account=mail_account,
                     )
 
                 await notify(f"🔗 Link verifica trovato, apertura...")
@@ -278,6 +284,7 @@ class HiggsFieldService:
                     password=higgs_password,
                     verification_link=verify_link,
                     message="Account creato e verificato con successo.",
+                    mail_account=mail_account,
                 )
 
         except Exception as e:
@@ -287,6 +294,7 @@ class HiggsFieldService:
                 email=mail_account.address,
                 password=higgs_password,
                 message=f"❌ Errore imprevisto: {e}",
+                mail_account=mail_account,
             )
 
     async def _fill_and_submit(
