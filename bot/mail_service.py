@@ -78,6 +78,8 @@ class MailTMService:
                         continue
                     resp.raise_for_status()
                     return await resp.json()
+            except aiohttp.ClientResponseError:
+                raise  # 4xx (non-429) — non ritentare, lascia gestire al chiamante
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 last_error = e
                 if attempt < max_retries:
@@ -145,20 +147,45 @@ class MailTMService:
 
         return account
 
+    # ── Token refresh ────────────────────────────────────────
+
+    async def _refresh_token(self, account: TempMailAccount) -> None:
+        """Re-authenticate to obtain a fresh JWT token."""
+        data = await self._request(
+            "POST",
+            f"{BASE_URL}/token",
+            json={"address": account.address, "password": account.password},
+        )
+        account.token = data["token"]
+        logger.info("Token rinnovato per %s", account.address)
+
+    async def _auth_request(
+        self,
+        method: str,
+        url: str,
+        account: TempMailAccount,
+        **kwargs,
+    ) -> dict:
+        """Authenticated request with retry logic and automatic token refresh on 401."""
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {account.token}"
+        kwargs["headers"] = headers
+
+        try:
+            return await self._request(method, url, **kwargs)
+        except aiohttp.ClientResponseError as e:
+            if e.status != 401:
+                raise
+            logger.info("Token scaduto per %s, rinnovo...", account.address)
+            await self._refresh_token(account)
+            kwargs["headers"]["Authorization"] = f"Bearer {account.token}"
+            return await self._request(method, url, **kwargs)
+
     # ── Messages ────────────────────────────────────────────
 
     async def get_messages(self, account: TempMailAccount) -> list[MailMessage]:
-        session = await self._get_session()
-        headers = {"Authorization": f"Bearer {account.token}"}
-        proxy = get_random_proxy()
-        proxy_kw = {"proxy": proxy} if proxy else {}
-
-        async with session.get(
-            f"{BASE_URL}/messages", headers=headers, **proxy_kw
-        ) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-            members = data.get("hydra:member", data) if isinstance(data, dict) else data
+        data = await self._auth_request("GET", f"{BASE_URL}/messages", account)
+        members = data.get("hydra:member", data) if isinstance(data, dict) else data
 
         return [
             MailMessage(
@@ -179,16 +206,9 @@ class MailTMService:
     async def get_message_detail(
         self, account: TempMailAccount, message_id: str
     ) -> MailMessage:
-        session = await self._get_session()
-        headers = {"Authorization": f"Bearer {account.token}"}
-        proxy = get_random_proxy()
-        proxy_kw = {"proxy": proxy} if proxy else {}
-
-        async with session.get(
-            f"{BASE_URL}/messages/{message_id}", headers=headers, **proxy_kw
-        ) as resp:
-            resp.raise_for_status()
-            m = await resp.json()
+        m = await self._auth_request(
+            "GET", f"{BASE_URL}/messages/{message_id}", account
+        )
 
         html_content = m.get("html", "")
         if isinstance(html_content, list):
