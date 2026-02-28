@@ -83,6 +83,7 @@ class HiggsFieldService:
         proxy_url: str | None = None,
         progress_callback=None,
         on_email_created=None,
+        custom_email: str | None = None,
     ) -> RegistrationResult:
         """
         Esegue il flow completo di registrazione.
@@ -93,6 +94,8 @@ class HiggsFieldService:
             on_email_created: async callable(TempMailAccount) chiamato subito
                               dopo la creazione dell'email, prima del browser.
                               Permette al chiamante di salvare lo stato in anticipo.
+            custom_email: Se fornita, usa questa email al posto di una temp mail.
+                          L'utente dovrà verificare manualmente dalla propria inbox.
 
         Returns:
             RegistrationResult con credenziali o errore
@@ -105,28 +108,40 @@ class HiggsFieldService:
                 await progress_callback(msg)
 
         async with _browser_semaphore:
-            return await self._register_impl(proxy, notify, on_email_created)
-
-    async def _register_impl(self, proxy, notify, on_email_created=None) -> RegistrationResult:
-        """Internal registration logic, runs under the browser semaphore."""
-        # ── Step 1: Crea email temporanea ───────────────────
-        await notify("📧 Creazione email temporanea...")
-        try:
-            mail_account = await self.mail.create_account()
-        except Exception as e:
-            return RegistrationResult(
-                success=False, message=f"Errore creazione email: {e}"
+            return await self._register_impl(
+                proxy, notify, on_email_created, custom_email=custom_email
             )
 
-        await notify(f"✅ Email: {mail_account.address}")
+    async def _register_impl(
+        self, proxy, notify, on_email_created=None, custom_email: str | None = None
+    ) -> RegistrationResult:
+        """Internal registration logic, runs under the browser semaphore."""
+        mail_account: TempMailAccount | None = None
+        using_custom_email = bool(custom_email)
 
-        # Notifica il chiamante immediatamente così può salvare lo stato
-        # PRIMA del browser work (che può richiedere minuti).
-        if on_email_created:
+        if using_custom_email:
+            email_address = custom_email
+            await notify(f"📧 Uso email personalizzata: {custom_email}")
+        else:
+            # ── Step 1: Crea email temporanea ───────────────────
+            await notify("📧 Creazione email temporanea...")
             try:
-                await on_email_created(mail_account)
+                mail_account = await self.mail.create_account()
             except Exception as e:
-                logger.warning(f"on_email_created callback failed: {e}")
+                return RegistrationResult(
+                    success=False, message=f"Errore creazione email: {e}"
+                )
+
+            email_address = mail_account.address
+            await notify(f"✅ Email: {mail_account.address}")
+
+            # Notifica il chiamante immediatamente così può salvare lo stato
+            # PRIMA del browser work (che può richiedere minuti).
+            if on_email_created:
+                try:
+                    await on_email_created(mail_account)
+                except Exception as e:
+                    logger.warning(f"on_email_created callback failed: {e}")
 
         higgs_password = _random_password()
 
@@ -199,26 +214,42 @@ class HiggsFieldService:
                     await browser.close()
                     return RegistrationResult(
                         success=False,
-                        email=mail_account.address,
+                        email=email_address,
                         message="⚠️ CAPTCHA rilevato! Registrazione manuale necessaria.",
                         mail_account=mail_account,
                     )
 
                 # ── Compila form ────────────────────────────
-                result = await self._fill_and_submit(
-                    page, mail_account.address, higgs_password
+                form_error = await self._fill_and_submit(
+                    page, email_address, higgs_password
                 )
-                if not result:
+                if form_error:
                     # Screenshot per debug (unique filename to avoid overwrites)
                     screenshot_path = f"/tmp/higgs_error_{uuid.uuid4().hex[:8]}.png"
                     await page.screenshot(path=screenshot_path)
                     await browser.close()
                     return RegistrationResult(
                         success=False,
-                        email=mail_account.address,
+                        email=email_address,
                         password=higgs_password,
-                        message="❌ Errore compilazione/submit del form. Screenshot salvato.",
+                        message=form_error,
                         mail_account=mail_account,
+                    )
+
+                # ── Custom email: non possiamo controllare l'inbox ──
+                if using_custom_email:
+                    await browser.close()
+                    await notify("📨 Form inviato! Controlla la tua email.")
+                    return RegistrationResult(
+                        success=True,
+                        email=email_address,
+                        password=higgs_password,
+                        message=(
+                            "📨 Form inviato con successo!\n"
+                            "Controlla la tua inbox per il link di verifica.\n"
+                            "Usa /verifylink <url> per completare la verifica."
+                        ),
+                        mail_account=None,
                     )
 
                 await notify("📨 Form inviato. Attendo email di verifica...")
@@ -234,7 +265,7 @@ class HiggsFieldService:
                     await browser.close()
                     return RegistrationResult(
                         success=False,
-                        email=mail_account.address,
+                        email=email_address,
                         password=higgs_password,
                         message="⏰ Timeout: nessuna email di verifica ricevuta.",
                         mail_account=mail_account,
@@ -267,7 +298,7 @@ class HiggsFieldService:
                     await browser.close()
                     return RegistrationResult(
                         success=False,
-                        email=mail_account.address,
+                        email=email_address,
                         password=higgs_password,
                         message=f"❌ Nessun link di verifica trovato. Link nell'email: {links[:5]}",
                         mail_account=mail_account,
@@ -292,7 +323,7 @@ class HiggsFieldService:
 
                 return RegistrationResult(
                     success=True,
-                    email=mail_account.address,
+                    email=email_address,
                     password=higgs_password,
                     verification_link=verify_link,
                     message="Account creato e verificato con successo.",
@@ -303,18 +334,37 @@ class HiggsFieldService:
             logger.error(f"Errore generale registrazione: {e}", exc_info=True)
             return RegistrationResult(
                 success=False,
-                email=mail_account.address,
+                email=email_address,
                 password=higgs_password,
                 message=f"❌ Errore imprevisto: {e}",
                 mail_account=mail_account,
             )
 
+    @staticmethod
+    def _check_temp_email_block(page_text: str) -> str | None:
+        """Check if the page shows a disposable/temporary email rejection."""
+        block_phrases = [
+            "temporary email",
+            "disposable email",
+            "temp mail",
+            "not supported",
+        ]
+        lower = page_text.lower()
+        for phrase in block_phrases:
+            if phrase in lower:
+                return (
+                    "⚠️ Email temporanea rifiutata dal sito. "
+                    "Usa /register <tua@email.com> con un'email reale."
+                )
+        return None
+
     async def _fill_and_submit(
         self, page: Page, email: str, password: str
-    ) -> bool:
+    ) -> str | None:
         """
         Compila il form di registrazione e fa submit.
-        Ritorna True se il submit sembra andato a buon fine.
+        Ritorna None se il submit sembra andato a buon fine,
+        oppure un messaggio d'errore.
 
         Uses Playwright locators instead of query_selector to avoid
         'Unable to adopt element handle from a different document' errors
@@ -363,7 +413,7 @@ class HiggsFieldService:
                 await email_loc.wait_for(state="visible", timeout=10000)
             except Exception:
                 logger.error("Email input non trovato")
-                return False
+                return "❌ Campo email non trovato nella pagina."
 
             await email_loc.click()
             await page.wait_for_timeout(random.randint(100, 300))
@@ -371,6 +421,15 @@ class HiggsFieldService:
             # Simula digitazione umana
             for char in email:
                 await email_loc.press_sequentially(char, delay=random.randint(30, 80))
+
+            # Attendi validazione inline (alcuni siti verificano il dominio email via API)
+            await page.wait_for_timeout(1500)
+            page_text = await page.locator("body").inner_text()
+            block_msg = self._check_temp_email_block(page_text)
+            if block_msg:
+                logger.warning("Email temporanea rifiutata (inline validation)")
+                return block_msg
+
             await page.wait_for_timeout(random.randint(200, 500))
 
             # Password
@@ -379,7 +438,7 @@ class HiggsFieldService:
                 await password_loc.wait_for(state="visible", timeout=5000)
             except Exception:
                 logger.error("Password input non trovato")
-                return False
+                return "❌ Campo password non trovato nella pagina."
 
             await password_loc.click()
             await page.wait_for_timeout(random.randint(100, 300))
@@ -408,17 +467,21 @@ class HiggsFieldService:
             # Attendi navigazione o cambiamento pagina
             await page.wait_for_timeout(3000)
 
-            # Verifica se c'è un errore visibile (es. "already exists")
+            # Verifica errori visibili dopo il submit
             page_text = await page.locator("body").inner_text()
-            error_keywords = ["already exists", "error", "invalid", "failed"]
-            for kw in error_keywords:
-                if kw.lower() in page_text.lower():
-                    logger.warning(f"Possibile errore nel form: trovato '{kw}'")
-                    # Non necessariamente un blocco — potrebbe essere testo generico
-                    break
 
-            return True
+            # Check blocco email temporanea (post-submit)
+            block_msg = self._check_temp_email_block(page_text)
+            if block_msg:
+                logger.warning("Email temporanea rifiutata (post-submit)")
+                return block_msg
+
+            # Check errori specifici
+            if "already exists" in page_text.lower():
+                return "❌ Account già esistente con questa email."
+
+            return None
 
         except Exception as e:
             logger.error(f"Errore fill_and_submit: {e}", exc_info=True)
-            return False
+            return f"❌ Errore compilazione form: {e}"

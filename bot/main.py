@@ -9,7 +9,8 @@ Comandi:
   /read <n>           - Leggi messaggio completo
   /links              - Estrai link dall'ultimo messaggio
   /info               - Mostra email attiva
-  /register           - Auto-registrazione Higgsfield
+  /register           - Auto-registrazione Higgsfield (o /register email@example.com)
+  /verifylink <url>   - Verifica manuale tramite link email
   /monitor_status     - Status del page monitor
   /monitor_check      - Forza check immediato del monitor
   /notif_status       - Status del notification bus
@@ -167,7 +168,9 @@ async def cmd_start(message: Message):
         "/links — Estrai link\n"
         "/info — Email attiva\n\n"
         "<b>🚀 Higgsfield:</b>\n"
-        "/register — Auto-registrazione completa\n\n"
+        "/register — Auto-registrazione (email temp)\n"
+        "/register &lt;email&gt; — Registra con la tua email\n"
+        "/verifylink &lt;url&gt; — Verifica manuale con link\n\n"
         "<b>🔍 Monitor &amp; Diagnostica:</b>\n"
         "/monitor_status — Status monitor pagina\n"
         "/monitor_check — Check struttura immediato\n"
@@ -410,11 +413,23 @@ async def cmd_register(message: Message):
         await message.reply(rate_msg)
         return
 
-    status = await message.reply(
-        "🚀 <b>Avvio auto-registrazione Higgsfield...</b>\n\n"
-        "Il processo richiede circa 1-3 minuti.",
-        parse_mode=ParseMode.HTML,
-    )
+    # Parse optional email argument: /register or /register user@gmail.com
+    args = message.text.split(maxsplit=1)
+    custom_email = args[1].strip() if len(args) > 1 and "@" in args[1] else None
+
+    if custom_email:
+        status = await message.reply(
+            f"🚀 <b>Registrazione Higgsfield con email personale...</b>\n\n"
+            f"📧 {escape(custom_email)}\n"
+            f"Il processo richiede circa 1-3 minuti.",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        status = await message.reply(
+            "🚀 <b>Avvio auto-registrazione Higgsfield...</b>\n\n"
+            "Il processo richiede circa 1-3 minuti.",
+            parse_mode=ParseMode.HTML,
+        )
 
     steps: list[str] = []
 
@@ -445,7 +460,8 @@ async def cmd_register(message: Message):
 
         result = await higgs_service.register(
             progress_callback=progress,
-            on_email_created=on_email_created,
+            on_email_created=on_email_created if not custom_email else None,
+            custom_email=custom_email,
         )
         user_registrations.setdefault(uid, []).append(result)
 
@@ -457,14 +473,29 @@ async def cmd_register(message: Message):
             user_last_message[uid] = None
 
         if result.success:
-            await status.edit_text(
-                f"✅ <b>Registrazione completata!</b>\n\n"
-                f"📧 Email: <code>{escape(result.email)}</code>\n"
-                f"🔑 Password: <code>{escape(result.password)}</code>\n"
-                f"🔗 Link verifica: {escape(result.verification_link[:80])}\n\n"
-                f"⚠️ Salva queste credenziali.",
-                parse_mode=ParseMode.HTML,
-            )
+            if custom_email:
+                # Con email personalizzata: verifica manuale richiesta
+                await status.edit_text(
+                    f"✅ <b>Form inviato con successo!</b>\n\n"
+                    f"📧 Email: <code>{escape(result.email)}</code>\n"
+                    f"🔑 Password: <code>{escape(result.password)}</code>\n\n"
+                    f"📨 <b>Controlla la tua inbox</b> per il link di verifica.\n"
+                    f"Poi usa /verifylink &lt;url&gt; per completare.\n\n"
+                    f"⚠️ Salva queste credenziali.",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                verify_text = ""
+                if result.verification_link:
+                    verify_text = f"🔗 Link verifica: {escape(result.verification_link[:80])}\n"
+                await status.edit_text(
+                    f"✅ <b>Registrazione completata!</b>\n\n"
+                    f"📧 Email: <code>{escape(result.email)}</code>\n"
+                    f"🔑 Password: <code>{escape(result.password)}</code>\n"
+                    f"{verify_text}\n"
+                    f"⚠️ Salva queste credenziali.",
+                    parse_mode=ParseMode.HTML,
+                )
             if bus:
                 await bus.info(
                     f"Registrazione Higgsfield riuscita: {result.email}",
@@ -478,7 +509,7 @@ async def cmd_register(message: Message):
                 f"📧 Email: <code>{escape(result.email)}</code>\n"
                 f"🔑 Password: <code>{escape(result.password)}</code>\n"
                 f"💬 {escape(result.message)}\n\n"
-                f"Riprova con /register o completa manualmente.",
+                f"Riprova con /register o /register &lt;tua@email.com&gt;",
                 parse_mode=ParseMode.HTML,
             )
             if bus:
@@ -493,6 +524,60 @@ async def cmd_register(message: Message):
         logger.error(f"Errore registrazione per user {uid}: {e}", exc_info=True)
         await status.edit_text(
             f"❌ Errore imprevisto: {escape(e)}", parse_mode=ParseMode.HTML
+        )
+
+
+@router.message(Command("verifylink"))
+async def cmd_verifylink(message: Message):
+    """Apre un link di verifica in Playwright (per email personalizzate)."""
+    if not is_allowed(message.from_user.id):
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or not args[1].strip().startswith("http"):
+        await message.reply(
+            "⚠️ Uso: /verifylink &lt;url&gt;\n"
+            "Incolla il link di verifica ricevuto via email.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    verify_url = args[1].strip()
+    status = await message.reply("🔗 Apertura link di verifica...")
+
+    try:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            page = await browser.new_page()
+            await page.goto(verify_url, wait_until="networkidle", timeout=30000)
+            await page.wait_for_timeout(3000)
+
+            page_text = await page.locator("body").inner_text()
+            await browser.close()
+
+        # Check risultato
+        lower = page_text.lower()
+        if any(w in lower for w in ("verified", "success", "welcome", "confirmed")):
+            await status.edit_text(
+                "✅ <b>Verifica completata con successo!</b>",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            preview = page_text[:500] if page_text.strip() else "(pagina vuota)"
+            await status.edit_text(
+                f"⚠️ <b>Link aperto.</b> Verifica il risultato:\n\n"
+                f"<code>{escape(preview)}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+
+    except Exception as e:
+        await status.edit_text(
+            f"❌ Errore apertura link: {escape(e)}", parse_mode=ParseMode.HTML
         )
 
 
